@@ -1,0 +1,16 @@
+{
+  "description": "Anyanwu \u2014 the Eye of the Sun. Stablecoin payroll for borderless teams on QIE: fund a treasury, pay your whole team in one run, stream pay as work happens, and keep a public record of every payment.",
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  },
+  "name": "anyanwu",
+  "packageManager": "pnpm@10.15.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm --filter @anyanwu/shared build && pnpm --filter @anyanwu/ledger build && pnpm --filter @anyanwu/web build",
+    "dev": "pnpm --filter @anyanwu/web dev",
+    "test": "pnpm --filter @anyanwu/shared test && pnpm --filter @anyanwu/ledger test && pnpm --filter @anyanwu/web test && forge test --root contracts",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "version": "0.1.0"
+}

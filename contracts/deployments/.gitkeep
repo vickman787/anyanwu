@@ -1,0 +1,2 @@
+Deployment addresses go here after `forge script` runs.
+One JSON file per network, e.g. qie-testnet.json. Never commit a key.

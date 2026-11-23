@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage/
+out/
+contracts/cache/
+contracts/broadcast/
+contracts/deployments/*.json
+!contracts/deployments/.gitkeep
