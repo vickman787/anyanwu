@@ -4,9 +4,11 @@
  * nothing leaves your machine. The point of the demo is to show the flow:
  * add a team, fund the treasury, run a pay run, watch the record grow.
  *
- * When the contracts are deployed, the same screens will read and write
- * the chain instead. Until then, every screen says plainly that this is
- * demo money.
+ * Real money lives in the dashboard's "Live on mainnet" card instead
+ * (see `lib/live.ts`): it reads the chain and sends real transactions
+ * through the user's wallet. A live run is written into this same
+ * record afterwards, so the portal and the public read API show it —
+ * marked live, with its transaction hash.
  */
 import { appendLedger, verifyLedger, type LedgerEntry } from "@anyanwu/ledger";
 import {
@@ -163,6 +165,57 @@ export async function runDemoPayroll(state: DemoState, actor: string, memo?: Pay
     }
   }
   return { ...state, treasuryUnits: treasury.toString(), ledger, streams };
+}
+
+/**
+ * Write a live (on-chain) funding into the same record, so the portal
+ * and the public read API show it — marked live, with its tx hash.
+ * The money itself moved on-chain; this only records that it happened.
+ */
+export async function recordLiveFunding(
+  state: DemoState,
+  actor: string,
+  amountUnits: bigint,
+  txHash: string,
+): Promise<DemoState> {
+  const ledger = await appendLedger(state.ledger, {
+    type: "treasury_funded",
+    actor,
+    amountUnits: amountUnits.toString(),
+    memo: `Treasury funded — ${fromBaseUnits(amountUnits, DECIMALS)} QUSDC (live, tx ${txHash.slice(0, 10)}…)`,
+    createdAt: new Date().toISOString(),
+  });
+  return { ...state, ledger };
+}
+
+export interface LiveRunLine {
+  member: Member;
+  amountUnits: bigint;
+}
+
+/**
+ * Write a live (on-chain) pay run into the same record — one entry per
+ * person paid, marked live with the run number and tx hash, so the
+ * portal and the public read API show the real run.
+ */
+export async function recordLivePayroll(
+  state: DemoState,
+  actor: string,
+  lines: LiveRunLine[],
+  record: { payPeriod: string; note: string; txHash: string; runId: bigint | null },
+): Promise<DemoState> {
+  let ledger = state.ledger;
+  for (const line of lines) {
+    ledger = await appendLedger(ledger, {
+      type: "pay_run",
+      actor,
+      counterparty: line.member.wallet,
+      amountUnits: line.amountUnits.toString(),
+      memo: `${payRunMemo(record.payPeriod, line.member.name, fromBaseUnits(line.amountUnits, DECIMALS), record.note)} — live, run #${record.runId ?? "?"} · tx ${record.txHash.slice(0, 10)}…`,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return { ...state, ledger };
 }
 
 /** Add a scheduled pay run. The first run happens at `runAt`, then repeats. */

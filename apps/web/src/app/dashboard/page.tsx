@@ -7,6 +7,7 @@ import {
   fromBaseUnits,
   nextDueAt,
   planPayroll,
+  toBaseUnits,
   type Member,
   type Repeat,
 } from "@anyanwu/shared";
@@ -21,6 +22,8 @@ import {
   EMPTY_STATE,
   fundDemoTreasury,
   loadDemo,
+  recordLiveFunding,
+  recordLivePayroll,
   resetDemo,
   runDemoPayroll,
   runScheduledPayroll,
@@ -29,6 +32,15 @@ import {
   treasuryDisplay,
   type DemoState,
 } from "@/lib/demo";
+import {
+  BATCHER_MAINNET,
+  fundTreasuryLive,
+  liveTxUrl,
+  readLiveBalances,
+  runPayrollLive,
+  TREASURY_MAINNET,
+  type LiveBalances,
+} from "@/lib/live";
 import { chainFor, connectWallet, currentChainId, holdsQieId, shortAddress, switchToQie, tokenAddress, type QieNetwork } from "@/lib/qie";
 
 const CONTRACTS_MAINNET = {
@@ -58,6 +70,12 @@ export default function Dashboard() {
   const [schedDate, setSchedDate] = useState("");
   const [schedRepeat, setSchedRepeat] = useState<Repeat>("monthly");
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [liveBalances, setLiveBalances] = useState<LiveBalances | null>(null);
+  const [liveBusy, setLiveBusy] = useState(false);
+  const [liveStep, setLiveStep] = useState("");
+  const [liveTxHash, setLiveTxHash] = useState<string | null>(null);
+  const [liveRunId, setLiveRunId] = useState<string | null>(null);
+  const [liveFundAmount, setLiveFundAmount] = useState("10");
 
   useEffect(() => {
     setState(loadDemo());
@@ -97,8 +115,100 @@ export default function Dashboard() {
       const id = await holdsQieId(address, network);
       setQieIdNote(id.note);
       setQieIdHolds(id.supported ? id.holdsName : null);
+      if (network === "mainnet") {
+        try {
+          setLiveBalances(await readLiveBalances(address));
+        } catch {
+          // Balances refresh from the button below; a failed read is not fatal.
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not connect the wallet.");
+    }
+  }
+
+  async function refreshLive() {
+    setError("");
+    try {
+      setLiveBalances(await readLiveBalances(wallet));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read the chain just now.");
+    }
+  }
+
+  async function onFundLive() {
+    if (!wallet) {
+      setError("Connect your wallet first.");
+      return;
+    }
+    setLiveBusy(true);
+    setLiveStep("");
+    setError("");
+    setMessage("");
+    try {
+      const amount = toBaseUnits(liveFundAmount.trim(), DECIMALS);
+      const { fundHash } = await fundTreasuryLive(wallet, amount, setLiveStep);
+      update(await recordLiveFunding(state, wallet, amount, fundHash));
+      setLiveTxHash(fundHash);
+      setLiveRunId(null);
+      setLiveStep("");
+      setMessage(`Treasury funded with ${fromBaseUnits(amount, DECIMALS)} real QUSDC.`);
+      void refreshLive();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Funding the treasury failed.");
+    } finally {
+      setLiveBusy(false);
+    }
+  }
+
+  async function onRunLive() {
+    if (!wallet) {
+      setError("Connect your wallet first.");
+      return;
+    }
+    if (!onRightChain) {
+      setError(`Switch to ${chainFor(network).name} first.`);
+      return;
+    }
+    setLiveBusy(true);
+    setLiveStep("");
+    setError("");
+    setMessage("");
+    try {
+      const runPlan = planPayroll(state.members, 0, DECIMALS);
+      const streamMembers = runPlan.lines.filter((l) => l.member.payStyle === "stream");
+      if (streamMembers.length > 0) {
+        throw new Error(
+          `${streamMembers.map((l) => l.member.name).join(", ")} ${streamMembers.length > 1 ? "have" : "has"} streaming pay, which is not live yet. Switch them to monthly to pay them live, or pay them in the demo below.`,
+        );
+      }
+      const lines = runPlan.lines.map((l) => ({ member: l.member, amountUnits: l.amountUnits }));
+      const { txHash, runId } = await runPayrollLive(
+        wallet,
+        lines.map((l) => l.member.wallet),
+        lines.map((l) => l.amountUnits),
+        memoPeriod.trim() || currentPayPeriod(Date.now()),
+        setLiveStep,
+      );
+      update(
+        await recordLivePayroll(state, wallet, lines, {
+          payPeriod: memoPeriod.trim() || currentPayPeriod(Date.now()),
+          note: memoNote.trim(),
+          txHash,
+          runId,
+        }),
+      );
+      setLiveTxHash(txHash);
+      setLiveRunId(runId === null ? null : runId.toString());
+      setLiveStep("");
+      setMessage(
+        `Live pay run done — ${lines.length} ${lines.length === 1 ? "person" : "people"} paid in real QUSDC${runId === null ? "" : ` (run #${runId})`}.`,
+      );
+      void refreshLive();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The live pay run failed.");
+    } finally {
+      setLiveBusy(false);
     }
   }
 
@@ -172,7 +282,7 @@ export default function Dashboard() {
   return (
     <main>
       <h1>Pay your team</h1>
-      <p className="muted">Add people, fund the treasury, and pay everyone in one run. The demo below is test money in your browser — the contracts are live on QIE mainnet, but this demo does not move on-chain money yet. On-chain runs come next, starting small.</p>
+      <p className="muted">Add people, fund the treasury, and pay everyone in one run. The demo below is test money in your browser — the &ldquo;Live on mainnet&rdquo; card moves real QUSDC through the contracts on QIE mainnet, so start small and check every address before you pay.</p>
       {network === "mainnet" ? (
         <div className="warn">
           <strong>Real money on mainnet.</strong> The contracts are live on chain 1990 — treasury <code>{CONTRACTS_MAINNET.treasury}</code>, pay-run <code>{CONTRACTS_MAINNET.batcher}</code>, streams <code>{CONTRACTS_MAINNET.stream}</code>. Funding the treasury and running payroll on-chain moves real QUSDC, so start small and check every address before you pay.
@@ -215,6 +325,85 @@ export default function Dashboard() {
           </p>
         )}
       </section>
+
+      {network === "mainnet" && (
+        <section className="card">
+          <h2>Live on mainnet — real QUSDC</h2>
+          <p className="muted">
+            This is the real flow, not the demo below. A pay run pays from
+            your connected wallet through the pay-run contract — two wallet
+            confirmations: approve the spend, then run payroll. Either
+            everyone is paid, or the whole run fails and nothing moves.
+          </p>
+          <p className="muted">
+            The treasury is the team&rsquo;s money box, and only the wallet
+            that deployed it can take money back out or send it to a pay
+            run. If that is not the wallet you connected, do not fund the
+            treasury — run payroll directly instead.
+          </p>
+          <div className="row">
+            <div>
+              <label>Treasury (live)</label>
+              <p style={{ margin: "0.55rem 0" }}>
+                {liveBalances ? `${fromBaseUnits(liveBalances.treasuryUnits, DECIMALS)} QUSDC` : "—"}
+              </p>
+            </div>
+            <div>
+              <label>Pay-run contract (live)</label>
+              <p style={{ margin: "0.55rem 0" }}>
+                {liveBalances ? `${fromBaseUnits(liveBalances.batcherUnits, DECIMALS)} QUSDC` : "—"}
+              </p>
+            </div>
+            <div>
+              <label>Your QUSDC (live)</label>
+              <p style={{ margin: "0.55rem 0" }}>
+                {liveBalances?.myQusdcUnits !== null && liveBalances?.myQusdcUnits !== undefined
+                  ? `${fromBaseUnits(liveBalances.myQusdcUnits, DECIMALS)} QUSDC`
+                  : "Connect a wallet to see it"}
+              </p>
+            </div>
+            <div style={{ flex: "0 0 auto" }}>
+              <button className="btn ghost small" onClick={refreshLive}>Refresh balances</button>
+            </div>
+          </div>
+          <div className="row">
+            <div>
+              <label>Fund the treasury (live, QUSDC)</label>
+              <input value={liveFundAmount} onChange={(e) => setLiveFundAmount(e.target.value)} placeholder="10" />
+            </div>
+            <div style={{ flex: "0 0 auto" }}>
+              <button className="btn" disabled={liveBusy || !wallet} onClick={onFundLive}>
+                Fund treasury — live
+              </button>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", marginTop: "0.75rem" }}>
+            <button className="btn" disabled={liveBusy || !wallet || !plan} onClick={onRunLive}>
+              Run payroll — live
+            </button>
+            <p className="muted" style={{ margin: "0.55rem 0" }}>
+              {plan
+                ? `Pays ${plan.lines.length} ${plan.lines.length === 1 ? "person" : "people"} ${fromBaseUnits(plan.totalUnits, DECIMALS)} QUSDC in one transaction.`
+                : "Add your team below first."}
+            </p>
+          </div>
+          {liveStep && <p className="muted">{liveStep}</p>}
+          {liveTxHash && (
+            <p>
+              Last live transaction:{" "}
+              <a href={liveTxUrl(liveTxHash)} target="_blank" rel="noreferrer">
+                {liveTxHash.slice(0, 10)}…{liveTxHash.slice(-4)}
+              </a>
+              {liveRunId !== null && ` · run #${liveRunId}`} ·{" "}
+              <a href={liveTxUrl(liveTxHash)} target="_blank" rel="noreferrer">see it on the explorer</a>
+            </p>
+          )}
+          <p className="muted">
+            Treasury <code>{TREASURY_MAINNET}</code> · pay-run{" "}
+            <code>{BATCHER_MAINNET}</code>
+          </p>
+        </section>
+      )}
 
       <section className="card">
         <h2>Treasury — {treasuryDisplay(state)} test dollars</h2>
